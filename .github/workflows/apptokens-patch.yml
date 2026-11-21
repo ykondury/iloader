@@ -15,6 +15,9 @@ jobs:
   macos:
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -38,13 +41,20 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p results
-          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib apple_auth::tests::token_request_recovers_from_503 -- --nocapture 2>&1 | tee results/baseline-red.log
+          set +e
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --release --target aarch64-apple-darwin --lib apple_auth::tests::token_request_recovers_from_503 -- --nocapture 2>&1 | tee results/baseline-red.log
+          test_status=${PIPESTATUS[0]}
+          set -e
+          test "$test_status" -ne 0
+          grep -F 'test result: FAILED' results/baseline-red.log
+          grep -F 'left: 503' results/baseline-red.log
+          grep -F 'right: 200' results/baseline-red.log
       - name: Run application test suite
         if: ${{ !inputs.baseline }}
         run: |
           set -o pipefail
           mkdir -p results
-          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib 2>&1 | tee results/rust-tests.log
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --release --target aarch64-apple-darwin --lib 2>&1 | tee results/rust-tests.log
       - name: Build Universal application
         if: ${{ !inputs.baseline }}
         env:
