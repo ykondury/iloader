@@ -54,7 +54,7 @@ jobs:
           codesign --display --verbose=4 "$app" 2>&1 | tee results/app-identity.log
           spctl --assess --type execute --verbose=2 "$app" 2>&1 | tee results/app-gatekeeper.log
           lipo -archs "$app/Contents/MacOS/iloader" | tee results/architectures.log
-          lipo -verify_arch x86_64 arm64 "$app/Contents/MacOS/iloader"
+          lipo "$app/Contents/MacOS/iloader" -verify_arch x86_64 arm64
 
       - name: Launch native application without signing in
         run: python3 scripts/smoke-macos.py "$RUNNER_TEMP/iloader-dmg/iloader.app" results
