@@ -212,8 +212,13 @@ async fn login(
                 }))
                 .set_url(&anisette_url),
         )
-        .login(password, Box::new(tfa_closure))
+        // isideload defaults to ten 429 retries, including authentication requests.
+        .err_429_retries(None)
+        .build()
         .await?;
+
+    crate::apple_auth::configure_transport(&mut account)?;
+    account.login(password, Box::new(tfa_closure)).await?;
 
     debug!("Logged in");
 

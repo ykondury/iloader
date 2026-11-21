@@ -55,6 +55,9 @@ jobs:
           set -o pipefail
           mkdir -p results
           cargo test --manifest-path src-tauri/Cargo.toml --locked --release --target aarch64-apple-darwin --lib 2>&1 | tee results/rust-tests.log
+      - name: Verify tests catch forbidden retries
+        if: ${{ !inputs.baseline }}
+        run: python3 scripts/check-apptokens-mutations.py
       - name: Build Universal application
         if: ${{ !inputs.baseline }}
         env:
@@ -62,6 +65,15 @@ jobs:
         run: |
           set -o pipefail
           bun tauri build --target universal-apple-darwin --bundles app,dmg --config src-tauri/ci.conf.json -- --locked 2>&1 | tee results/build.log
+      - name: Inspect built application
+        if: ${{ !inputs.baseline }}
+        run: |
+          set -euo pipefail
+          app=src-tauri/target/universal-apple-darwin/release/bundle/macos/iloader.app
+          codesign --verify --deep --strict --all-architectures --verbose=2 "$app" 2>&1 | tee results/codesign.log
+          codesign --display --verbose=4 "$app" 2>&1 | tee results/signing-identity.log
+          lipo "$app/Contents/MacOS/iloader" -verify_arch x86_64 arm64
+          python3 scripts/inspect-patched-app.py "$app" results/built-app.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -69,4 +81,45 @@ jobs:
           path: |
             results/
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: warn
+
+  native-startup:
+    if: ${{ !inputs.baseline }}
+    needs: macos
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: apptokens-macos-results
+          path: build-input
+      - name: Verify installer and native startup
+        run: |
+          set -euo pipefail
+          mkdir -p native-results "$RUNNER_TEMP/patched-iloader"
+          dmg=$(find build-input -name '*.dmg' -print -quit)
+          test -n "$dmg"
+          shasum -a 256 "$dmg" | tee native-results/dmg-sha256.log
+          hdiutil verify "$dmg" 2>&1 | tee native-results/dmg-integrity.log
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$RUNNER_TEMP/patched-iloader"
+          app="$RUNNER_TEMP/patched-iloader/iloader.app"
+          codesign --verify --deep --strict --all-architectures --verbose=2 "$app" 2>&1 | tee native-results/codesign.log
+          python3 scripts/inspect-patched-app.py "$app" native-results/installed-app.json
+          python3 scripts/smoke-macos.py "$app" native-results
+      - name: Detach installer
+        if: always()
+        run: |
+          if mount | grep -F "on $RUNNER_TEMP/patched-iloader ("; then
+            hdiutil detach "$RUNNER_TEMP/patched-iloader"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: apptokens-native-${{ matrix.runner }}
+          path: native-results/
           if-no-files-found: warn
