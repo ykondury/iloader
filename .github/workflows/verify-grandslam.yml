@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   verify:
@@ -23,6 +24,7 @@ jobs:
         run: |
           gh release download v2.4.2 --repo nab138/iloader --pattern 'iloader-darwin-universal.dmg' --pattern 'iloader-darwin-universal.app.tar.gz' --dir verify-input
           gh release download v2.4.1 --repo nab138/iloader --pattern 'iloader-darwin-universal.app.tar.gz' --dir verify-input/v2.4.1
+          gh run download 44667757448 --repo nab138/iloader --name macos-dmg-universal --dir verify-input/notarized
           curl --fail --location --output verify-input/isideload-0.5.2.crate https://static.crates.io/crates/isideload/isideload-0.5.2.crate
 
       - name: Check hashes, both CPU slices, regression and accountless GSA responses
@@ -31,7 +33,7 @@ jobs:
       - name: Verify DMG integrity, signatures, notarization and architectures
         run: |
           set -euo pipefail
-          dmg="$PWD/verify-input/iloader-darwin-universal.dmg"
+          dmg="$PWD/verify-input/notarized/universal-apple-darwin/release/bundle/dmg/iloader_2.4.2_universal.dmg"
           app="$RUNNER_TEMP/iloader-dmg/iloader.app"
           hdiutil verify "$dmg" 2>&1 | tee results/dmg-integrity.log
           codesign --verify --verbose=2 "$dmg" 2>&1 | tee results/dmg-signature.log

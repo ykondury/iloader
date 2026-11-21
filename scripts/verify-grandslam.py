@@ -16,11 +16,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+NOTARIZED_DMG = "notarized/universal-apple-darwin/release/bundle/dmg/iloader_2.4.2_universal.dmg"
 HASHES = {
     "iloader-darwin-universal.dmg": "e67b92eeaf16493991c1721aec3e2aaedde6670a4fa4a546c111718340bf0680",
     "iloader-darwin-universal.app.tar.gz": "835f6d67281c2b1d774b749c96b9c9e67a6b45b9963c299cd87a4fbb08df9df6",
     "isideload-0.5.2.crate": "7cab6348bffd8f32c9358b80c8723bc1da45ad97b0c1f30a1533ade22d4d9496",
     "v2.4.1/iloader-darwin-universal.app.tar.gz": "cf4bdd269f91ae91651cd20b101c6217052bedd3ae06ead72ef04d611afcfa5b",
+    NOTARIZED_DMG: "419e05f59ce8fe13a480dd27632e5b37530fd7964a7a8c8c5a3f010676ed6e67",
 }
 CLIENT_INFO = re.compile(
     rb"<[^<>\x00\r\n]+> <(?:macOS|Mac OS X);[^<>\x00\r\n]+> "
@@ -132,6 +134,9 @@ def main():
         raise ValueError("Expected exactly one AuthKit client info override in account.rs")
     source_client_info = matches[0].decode("ascii")
     report["source_client_info"] = source_client_info
+    report["delivered_installer"] = {"path": NOTARIZED_DMG,
+                                     "upstream_run": 44667757448,
+                                     "upstream_artifact": 14598274773}
     report["release"] = inspect_archive(args.downloads / "iloader-darwin-universal.app.tar.gz")
     errors.extend(check_client_info(report["release"]))
     if report["release"]["version"] != "2.4.2":
