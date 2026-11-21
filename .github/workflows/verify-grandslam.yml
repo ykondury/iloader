@@ -1,0 +1,73 @@
+name: Verify official macOS GrandSlam workaround
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download official release and negative control
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v2.4.2 --repo nab138/iloader --pattern 'iloader-darwin-universal.dmg' --pattern 'iloader-darwin-universal.app.tar.gz' --dir verify-input
+          gh release download v2.4.1 --repo nab138/iloader --pattern 'iloader-darwin-universal.app.tar.gz' --dir verify-input/v2.4.1
+          curl --fail --location --output verify-input/isideload-0.5.2.crate https://static.crates.io/crates/isideload/isideload-0.5.2.crate
+
+      - name: Check hashes, both CPU slices, regression and accountless GSA responses
+        run: python3 scripts/verify-grandslam.py --downloads verify-input --output results/verification.json --probe
+
+      - name: Verify DMG integrity, signatures, notarization and architectures
+        run: |
+          set -euo pipefail
+          dmg="$PWD/verify-input/iloader-darwin-universal.dmg"
+          app="$RUNNER_TEMP/iloader-dmg/iloader.app"
+          hdiutil verify "$dmg" 2>&1 | tee results/dmg-integrity.log
+          codesign --verify --verbose=2 "$dmg" 2>&1 | tee results/dmg-signature.log
+          xcrun stapler validate "$dmg" 2>&1 | tee results/notarization.log
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg" 2>&1 | tee results/dmg-gatekeeper.log
+          mkdir -p "$RUNNER_TEMP/iloader-dmg"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$RUNNER_TEMP/iloader-dmg" 2>&1 | tee results/mount.log
+          python3 - "$app/Contents/MacOS/iloader" <<'PY' | tee results/dmg-executable-hash.log
+          import hashlib, json, sys
+          from pathlib import Path
+          expected = json.loads(Path("results/verification.json").read_text())["release"]["executable_sha256"]
+          actual = hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest()
+          print(json.dumps({"expected_from_archive": expected, "actual_from_dmg": actual, "match": actual == expected}))
+          if actual != expected:
+              raise SystemExit("DMG and inspected app archive contain different executables")
+          PY
+          codesign --verify --deep --strict --all-architectures --verbose=2 "$app" 2>&1 | tee results/app-signature.log
+          codesign --display --verbose=4 "$app" 2>&1 | tee results/app-identity.log
+          spctl --assess --type execute --verbose=2 "$app" 2>&1 | tee results/app-gatekeeper.log
+          lipo -archs "$app/Contents/MacOS/iloader" | tee results/architectures.log
+          lipo -verify_arch x86_64 arm64 "$app/Contents/MacOS/iloader"
+
+      - name: Launch native application without signing in
+        run: python3 scripts/smoke-macos.py "$RUNNER_TEMP/iloader-dmg/iloader.app" results
+
+      - name: Detach test volume
+        if: always()
+        run: |
+          if mount | grep -F "on $RUNNER_TEMP/iloader-dmg ("; then
+            hdiutil detach "$RUNNER_TEMP/iloader-dmg"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: grandslam-verification-${{ matrix.runner }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
