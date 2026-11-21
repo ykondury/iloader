@@ -1,5 +1,6 @@
 #[macro_use]
 mod account;
+mod apple_auth;
 #[macro_use]
 mod device;
 #[macro_use]

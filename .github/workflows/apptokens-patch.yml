@@ -1,0 +1,62 @@
+name: Test and build app-token patch
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Run the regression against the original transport only
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          components: rustfmt
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: apptokens-macos-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: apptokens-macos-${{ hashFiles('src-tauri/Cargo.lock') }}-
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Build frontend
+        run: bun run build
+      - name: Run regression against original transport (expected to fail)
+        if: inputs.baseline
+        run: |
+          set -o pipefail
+          mkdir -p results
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib apple_auth::tests::token_request_recovers_from_503 -- --nocapture 2>&1 | tee results/baseline-red.log
+      - name: Run application test suite
+        if: ${{ !inputs.baseline }}
+        run: |
+          set -o pipefail
+          mkdir -p results
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib 2>&1 | tee results/rust-tests.log
+      - name: Build Universal application
+        if: ${{ !inputs.baseline }}
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+        run: |
+          set -o pipefail
+          bun tauri build --target universal-apple-darwin --bundles app,dmg --config src-tauri/ci.conf.json -- --locked 2>&1 | tee results/build.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: apptokens-macos-results
+          path: |
+            results/
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: warn

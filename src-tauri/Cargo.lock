@@ -2621,8 +2621,10 @@ dependencies = [
 name = "iloader"
 version = "2.4.2"
 dependencies = [
+ "async-trait",
  "chrono",
  "futures",
+ "http",
  "idevice",
  "isideload",
  "keyring",
@@ -2630,6 +2632,7 @@ dependencies = [
  "plist",
  "plist-macro",
  "reqwest",
+ "reqwest-middleware",
  "rootcause",
  "rustls",
  "serde",
