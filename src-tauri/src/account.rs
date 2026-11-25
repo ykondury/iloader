@@ -204,12 +204,7 @@ async fn login(
                 .set_serial_number("0".to_string())
                 .set_storage(create_sideloading_storage(app)?)
                 // just temporary while waiting for the anisette servers to start reporting this
-                .set_client_info_override(Some(AnisetteClientInfo {
-                    client_info:
-                        "<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
-                            .to_string(),
-                    user_agent: "akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0".to_string(),
-                }))
+                .set_client_info_override(Some(crate::auth_session::client_info()))
                 .set_url(&anisette_url),
         )
         // isideload defaults to ten 429 retries, including authentication requests.
