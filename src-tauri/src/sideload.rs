@@ -13,29 +13,38 @@ use isideload::{
 use tauri::{AppHandle, Manager, State, Window};
 
 pub type SideloaderMutex =
-    Mutex<Option<Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox>>>;
+    Mutex<Option<AuthenticatedSideloader>>;
+
+pub struct AuthenticatedSideloader {
+    pub inner: Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox>,
+    pub expires_at: u64,
+}
 
 pub struct SideloaderGuard<'a> {
     state: &'a SideloaderMutex,
-    sideloader: Option<Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox>>,
+    sideloader: Option<AuthenticatedSideloader>,
+    _operation: crate::auth_session::AccountOperation,
 }
 
 impl<'a> SideloaderGuard<'a> {
     pub fn take(state: &'a SideloaderMutex) -> Result<Self, AppError> {
+        let operation = crate::auth_session::AccountOperation::acquire()?;
         let mut guard = state.lock().unwrap();
         let sideloader = guard.take().ok_or(AppError::NotLoggedIn)?;
         Ok(Self {
             state,
             sideloader: Some(sideloader),
+            _operation: operation,
         })
     }
 
     pub fn get_mut(
         &mut self,
     ) -> &mut Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox> {
-        self.sideloader
+        &mut self.sideloader
             .as_mut()
             .expect("Sideloader should be present")
+            .inner
     }
 }
 

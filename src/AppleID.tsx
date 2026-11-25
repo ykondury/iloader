@@ -9,8 +9,15 @@ import { useStore } from "./StoreContext";
 import { useError } from "./ErrorContext";
 import { Certificate } from "./pages/Certificates";
 import { useTranslation } from "react-i18next";
+import { createLoginRunner, pendingSubscription } from "./loginFlow";
 
 const storePromise = load("data.json");
+const runLogin = createLoginRunner();
+
+type VerificationRequest = {
+  requestId: string;
+  params: { lastError: string | null };
+};
 
 export const AppleID = ({
   loggedInAs,
@@ -26,9 +33,14 @@ export const AppleID = ({
   const [forceUpdateIds, setForceUpdateIds] = useState<number>(0);
   const [emailInput, setEmailInput] = useState<string>("");
   const [passwordInput, setPasswordInput] = useState<string>("");
-  const [saveCredentials, setSaveCredentials] = useState<boolean>(false);
-  const [tfaOpen, setTfaOpen] = useState<boolean>(false);
+  const [saveCredentials, setSaveCredentials] = useState<boolean>(true);
+  const [verification, setVerification] = useState<VerificationRequest | null>(null);
   const [tfaCode, setTfaCode] = useState<string>("");
+  const [isLoggingIn, setIsLoggingIn] = useState(true);
+  const [submittingCode, setSubmittingCode] = useState(false);
+  const codePending = useRef(false);
+  const listenersReady = useRef<Promise<void>>(Promise.resolve());
+  const restoration = useRef<Promise<string | null> | null>(null);
   const [addAccountOpen, setAddAccountOpen] = useState<boolean>(false);
   const [anisetteServer] = useStore<string>(
     "anisetteServer3-1",
@@ -58,44 +70,59 @@ export const AppleID = ({
     setSelectedSerials(certs?.map((c) => c.serialNumber) ?? []);
   }, [certs]);
 
-  const listenerAdded = useRef<boolean>(false);
-  const unlisten = useRef<() => void>(() => {});
-
   useEffect(() => {
-    if (!listenerAdded.current) {
-      (async () => {
-        const unlistenFn = await listen("2fa-required", () => {
-          setTfaOpen(true);
-        });
-        unlisten.current = unlistenFn;
-      })();
-      listenerAdded.current = true;
-    }
+    const tfa = pendingSubscription(listen<VerificationRequest>("2fa-required", (event) => {
+      setTfaCode("");
+      setVerification(event.payload);
+    }));
+    const certificates = pendingSubscription(listen<Certificate[]>("max-certs-reached", (event) => {
+      setCerts(event.payload);
+    }));
+    listenersReady.current = Promise.all([tfa.ready, certificates.ready]).then(() => {});
+    // Consume registration failures here as well as before a manual login.
+    listenersReady.current.catch((e) => toast.error(err(t("apple_id.login_failed"), e)));
     return () => {
-      unlisten.current();
+      tfa.dispose();
+      certificates.dispose();
     };
   }, []);
 
-  const certListenerAdded = useRef<boolean>(false);
-  const certUnlisten = useRef<() => void>(() => {});
-
   useEffect(() => {
-    if (!certListenerAdded.current) {
-      (async () => {
-        const unlistenFn = await listen<Certificate[]>(
-          "max-certs-reached",
-          (certs) => {
-            setCerts(certs.payload);
-          },
-        );
-        certUnlisten.current = unlistenFn;
-      })();
-      certListenerAdded.current = true;
-    }
-    return () => {
-      certUnlisten.current();
-    };
+    let active = true;
+    restoration.current ??= invoke<string | null>("restore_session", { anisetteServer });
+    restoration.current.then((account) => {
+      if (active) setLoggedInAs(account);
+    }).catch((e) => {
+      if (active) toast.error(err(t("apple_id.login_failed"), e));
+    }).finally(() => {
+      if (active) setIsLoggingIn(false);
+    });
+    return () => { active = false; };
   }, []);
+
+  const signIn = (command: "login_new" | "login_stored", email: string, args: Record<string, unknown>) => {
+    if (isLoggingIn) return;
+    const promise = runLogin(async () => {
+      setIsLoggingIn(true);
+      try {
+        await listenersReady.current;
+        await invoke(command, { ...args, email, anisetteServer });
+        setLoggedInAs(email.trim().toLowerCase());
+        setPasswordInput("");
+        setAddAccountOpen(false);
+        setForceUpdateIds((v) => v + 1);
+      } finally {
+        setVerification(null);
+        setTfaCode("");
+        setIsLoggingIn(false);
+      }
+    });
+    if (promise) toast.promise(promise, {
+      loading: t("apple_id.logging_in"),
+      success: t("apple_id.logged_in_success"),
+      error: (e) => err(t("apple_id.login_failed"), e),
+    });
+  };
 
   return (
     <>
@@ -111,6 +138,7 @@ export const AppleID = ({
               <button
                 type="button"
                 className="action-button danger"
+                disabled={isLoggingIn}
                 onClick={async () => {
                   let promise = async () => {
                     await invoke("invalidate_account");
@@ -140,19 +168,9 @@ export const AppleID = ({
                       <button
                         type="button"
                         className="action-button primary"
+                        disabled={isLoggingIn}
                         onClick={() => {
-                          let promise = async () => {
-                            await invoke("login_stored", {
-                              email: id,
-                              anisetteServer,
-                            });
-                            setForceUpdateIds((v) => v + 1);
-                          };
-                          toast.promise(promise, {
-                            loading: t("apple_id.logging_in"),
-                            success: t("apple_id.logged_in_success"),
-                            error: (e) => err(t("apple_id.login_failed"), e),
-                          });
+                          signIn("login_stored", id, {});
                         }}
                       >
                         {t("apple_id.sign_in")}
@@ -161,6 +179,7 @@ export const AppleID = ({
                     <button
                       type="button"
                       className="action-button danger"
+                      disabled={isLoggingIn}
                       onClick={async () => {
                         let promise = async () => {
                           await invoke("delete_account", { email: id });
@@ -182,6 +201,7 @@ export const AppleID = ({
                 <div
                   className="stored add-account"
                   onClick={() => {
+                    if (isLoggingIn) return;
                     setAddAccountOpen(true);
                   }}
                 >
@@ -203,23 +223,9 @@ export const AppleID = ({
                   toast.warning(t("apple_id.enter_email_password"));
                   return;
                 }
-                // if (!emailInput.includes("@")) {
-                //   toast.warning(t("apple_id.valid_email"));
-                //   return;
-                // }
-                let promise = async () => {
-                  await invoke("login_new", {
-                    email: emailInput,
-                    password: passwordInput,
-                    saveCredentials: saveCredentials,
-                    anisetteServer,
-                  });
-                  setForceUpdateIds((v) => v + 1);
-                };
-                toast.promise(promise, {
-                  loading: t("apple_id.logging_in"),
-                  success: t("apple_id.logged_in_success"),
-                  error: (e) => err(t("apple_id.login_failed"), e),
+                signIn("login_new", emailInput, {
+                  password: passwordInput,
+                  saveCredentials: saveCredentials && !noKeyringAvailable,
                 });
               }}
             >
@@ -227,12 +233,14 @@ export const AppleID = ({
                 type="text"
                 placeholder={t("apple_id.email_placeholder")}
                 value={emailInput}
+                disabled={isLoggingIn}
                 onChange={(e) => setEmailInput(e.target.value)}
               />
               <input
                 type="password"
                 placeholder={t("apple_id.password_placeholder")}
                 value={passwordInput}
+                disabled={isLoggingIn}
                 onChange={(e) => setPasswordInput(e.target.value)}
               />
               {noKeyringAvailable ? (
@@ -245,6 +253,7 @@ export const AppleID = ({
                     type="checkbox"
                     id="save-credentials"
                     checked={saveCredentials}
+                    disabled={isLoggingIn}
                     onChange={(e) => setSaveCredentials(e.target.checked)}
                   />
                   <label htmlFor="save-credentials">
@@ -252,9 +261,11 @@ export const AppleID = ({
                   </label>
                 </div>
               )}
-              <button type="submit">{t("apple_id.login")}</button>
+              <button type="submit" disabled={isLoggingIn}>{t(isLoggingIn ? "apple_id.logging_in" : "apple_id.login")}</button>
               {addAccountOpen && storedIds.length > 0 && (
                 <button
+                  type="button"
+                  disabled={isLoggingIn}
                   onClick={() => {
                     setAddAccountOpen(false);
                   }}
@@ -266,29 +277,46 @@ export const AppleID = ({
           </div>
         )}
       </div>
-      <Modal sizeFit isOpen={tfaOpen} zIndex={2000}>
+      <Modal sizeFit isOpen={verification !== null} zIndex={2000}>
         <h2>{t("apple_id.two_factor_title")}</h2>
         <p>{t("apple_id.two_factor_prompt")}</p>
+        {verification?.params.lastError && <p role="alert">{verification.params.lastError}</p>}
         <form
           onSubmit={async (e) => {
             e.preventDefault();
-            if (tfaCode.length !== 6) {
+            if (codePending.current || !verification) return;
+            const code = tfaCode.trim();
+            if (!/^\d{6}$/.test(code)) {
               toast.warning(t("apple_id.valid_6digit"));
               return;
             }
-            await emit("2fa-recieved", tfaCode);
-            setTfaOpen(false);
-            setTfaCode("");
+            const requestId = verification.requestId;
+            codePending.current = true;
+            setSubmittingCode(true);
+            try {
+              await emit(`2fa-response-${requestId}`, code);
+              setVerification((current) => current?.requestId === requestId ? null : current);
+              setTfaCode("");
+            } catch (e) {
+              toast.error(err(t("apple_id.login_failed"), { type: "misc", message: String(e) }));
+            } finally {
+              codePending.current = false;
+              setSubmittingCode(false);
+            }
           }}
         >
           <input
             type="text"
             placeholder={t("apple_id.verification_placeholder")}
             value={tfaCode}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            maxLength={6}
+            disabled={submittingCode}
             onChange={(e) => setTfaCode(e.target.value)}
             style={{ marginRight: "0.5em" }}
           />
-          <button type="submit">{t("apple_id.submit")}</button>
+          <button type="submit" disabled={submittingCode}>{t("apple_id.submit")}</button>
         </form>
       </Modal>
       <Modal sizeFit isOpen={certs !== null} zIndex={2000}>

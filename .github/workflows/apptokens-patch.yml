@@ -34,6 +34,9 @@ jobs:
           restore-keys: apptokens-macos-${{ hashFiles('src-tauri/Cargo.lock') }}-
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
+      - name: Run login UI regressions
+        if: ${{ !inputs.baseline }}
+        run: bun test tests/
       - name: Build frontend
         run: bun run build
       - name: Run regression against original transport (expected to fail)
